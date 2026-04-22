@@ -403,25 +403,24 @@ def calculate_aic_bic(x_data, y_data, degree):
 
     return aic, bic
 
-def generate_c_code(name, degree, coefficients, max_error, description=""):
-    coef_len = len(coefficients)
+def generate_c_code(name, degree, coefficients, max_error, min_val=0, max_val=65535, description=""):
     if degree == 1:
         b, a0 = coefficients
-        formula = f"b * x + a0"
-        func_body = f"    return {b:.10e} * (float)x + {a0:.10e};"
+        func_body = f"    float result = {b:.10e} * (float)x + {a0:.10e};"
     elif degree == 2:
         a2, a1, a0 = coefficients
-        formula = f"a2 * x^2 + a1 * x + a0"
-        func_body = f"    float xf = (float)x;\n    return {a2:.10e} * xf * xf + {a1:.10e} * xf + {a0:.10e};"
+        func_body = f"    float xf = (float)x;\n    float result = {a2:.10e} * xf * xf + {a1:.10e} * xf + {a0:.10e};"
     elif degree == 3:
         a3, a2, a1, a0 = coefficients
-        formula = f"a3 * x^3 + a2 * x^2 + a1 * x + a0"
-        func_body = f"    float xf = (float)x;\n    return {a3:.10e} * xf * xf * xf + {a2:.10e} * xf * xf + {a1:.10e} * xf + {a0:.10e};"
+        func_body = f"    float xf = (float)x;\n    float result = {a3:.10e} * xf * xf * xf + {a2:.10e} * xf * xf + {a1:.10e} * xf + {a0:.10e};"
+
+    saturation = f"    if (result > {max_val:.1f}f) result = {max_val:.1f}f;\n    if (result < {min_val:.1f}f) result = {min_val:.1f}f;\n    return result;"
 
     guard_name = name.upper().replace(" ", "_").replace("-", "_")
 
     print(f"\n// =======================================================================")
     print(f"// {name} Compensation Function (degree={degree}, Max Error: {max_error:.4f}%)")
+    print(f"// Saturation: [{min_val}, {max_val}]")
     print(f"// =======================================================================")
     print(f"")
     print(f"#ifndef {guard_name}_H")
@@ -433,7 +432,7 @@ def generate_c_code(name, degree, coefficients, max_error, description=""):
     print(f"")
     print(f"// Compensate ADC data to get actual DA value")
     print(f"// Input:  uint16_t ad_value - Raw ADC value")
-    print(f"// Output: float - Compensated DA value")
+    print(f"// Output: float - Compensated DA value (clamped to [{min_val}, {max_val}])")
     print(f"extern float {name.replace(' ', '_').replace('-', '_')}_compensate(uint16_t x);")
     print(f"")
     print(f"#ifdef __cplusplus")
@@ -450,6 +449,7 @@ def generate_c_code(name, degree, coefficients, max_error, description=""):
     print(f"")
     print(f"float {name.replace(' ', '_').replace('-', '_')}_compensate(uint16_t x) {{")
     print(f"{func_body}")
+    print(f"{saturation}")
     print(f"}}")
     print(f"")
     print(f"#endif // {guard_name}_IMPLEMENTATION")
