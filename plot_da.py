@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import sys
+import argparse
+import math
 
 def load_da_data(filepath):
     data = []
@@ -20,7 +22,30 @@ def polynomial_fit(x_data, y_data, degree=2):
     x = x_data.copy()
     y = y_data.copy()
 
-    if degree == 2:
+    if degree == 3:
+        sum_x = sum(x)
+        sum_x2 = sum(xi * xi for xi in x)
+        sum_x3 = sum(xi * xi * xi for xi in x)
+        sum_x4 = sum(xi * xi * xi * xi for xi in x)
+        sum_x5 = sum(xi * xi * xi * xi * xi for xi in x)
+        sum_x6 = sum(xi * xi * xi * xi * xi * xi for xi in x)
+        sum_y = sum(y)
+        sum_xy = sum(x[i] * y[i] for i in range(n))
+        sum_x2y = sum(x[i] * x[i] * y[i] for i in range(n))
+        sum_x3y = sum(x[i] * x[i] * x[i] * y[i] for i in range(n))
+
+        A = [
+            [n, sum_x, sum_x2, sum_x3],
+            [sum_x, sum_x2, sum_x3, sum_x4],
+            [sum_x2, sum_x3, sum_x4, sum_x5],
+            [sum_x3, sum_x4, sum_x5, sum_x6]
+        ]
+        B = [sum_y, sum_xy, sum_x2y, sum_x3y]
+
+        coeff = solve_linear(A, B)
+        return (coeff[3], coeff[2], coeff[1], coeff[0])
+
+    elif degree == 2:
         sum_x = sum(x)
         sum_x2 = sum(xi * xi for xi in x)
         sum_x3 = sum(xi * xi * xi for xi in x)
@@ -43,6 +68,38 @@ def polynomial_fit(x_data, y_data, degree=2):
         return linear_regression_coef(x_data, y_data)
 
     return None
+
+def calculate_aic_bic(x_data, y_data, degree):
+    n = len(x_data)
+    if degree == 1:
+        k = 2
+    elif degree == 2:
+        k = 3
+    elif degree == 3:
+        k = 4
+    else:
+        k = degree + 1
+
+    if degree == 1:
+        b, a0 = polynomial_fit(x_data, y_data, degree=1)
+        y_pred = [b * x + a0 for x in x_data]
+    elif degree == 2:
+        a2, a1, a0 = polynomial_fit(x_data, y_data, degree=2)
+        y_pred = [a2 * x * x + a1 * x + a0 for x in x_data]
+    elif degree == 3:
+        a3, a2, a1, a0 = polynomial_fit(x_data, y_data, degree=3)
+        y_pred = [a3 * x * x * x + a2 * x * x + a1 * x + a0 for x in x_data]
+    else:
+        return None, None
+
+    rss = sum((y_data[i] - y_pred[i]) ** 2 for i in range(n))
+    if rss <= 0:
+        rss = 1e-10
+
+    aic = n * math.log(rss / n) + 2 * k
+    bic = n * math.log(rss / n) + k * math.log(n)
+
+    return aic, bic
 
 def solve_linear(A, B):
     n = len(A)
@@ -229,6 +286,139 @@ def polynomial_analysis_v(data, a2, a1, a0):
         print("│  Result: ✗ Needs Improvement                    │")
     print("=" * 60)
 
+def polynomial_compensate_v1(x, b, a0):
+    return b * x + a0
+
+def polynomial_analysis_v1(data, b, a0):
+    compensated = []
+    for idx, voltMeas in data:
+        voltCorr = polynomial_compensate_v1(idx, b, a0)
+        compensated.append((idx, voltMeas, voltCorr))
+
+    errors = []
+    for idx, voltMeas, voltCorr in compensated:
+        if idx > 0:
+            theory = idx * 0.000153
+            error = (voltCorr - theory) / theory * 100
+            errors.append(error)
+
+    max_err = max(errors)
+    min_err = min(errors)
+    avg_err = sum(errors) / len(errors)
+
+    print("\n" + "=" * 60)
+    print("│        Polynomial Compensation (y=bx+c)                       │")
+    print("=" * 60)
+    print(f"│  Coefficient:                                         │")
+    print(f"│    b = {b:>15.10e}                             │")
+    print(f"│    c = {a0:>15.10e}                             │")
+    print("=" * 60)
+    print(f"│  Max Error:  {max_err:>10.4f}%                            │")
+    print(f"│  Min Error:  {min_err:>10.4f}%                            │")
+    print(f"│  Avg Error:  {avg_err:>10.4f}%                            │")
+    print("=" * 60)
+
+    if max(abs(max_err), abs(min_err)) <= 0.01:
+        print("│  Result: ★★★★★ Excellent (Error < 0.01%)         │")
+    elif max(abs(max_err), abs(min_err)) <= 0.05:
+        print("│  Result: ★★★★ Great (Error < 0.05%)              │")
+    elif max(abs(max_err), abs(min_err)) <= 0.1:
+        print("│  Result: ★★★ Good (Error < 0.1%)                │")
+    elif max(abs(max_err), abs(min_err)) <= 0.5:
+        print("│  Result: ★★ Acceptable (Error < 0.5%)            │")
+    else:
+        print("│  Result: ✗ Needs Improvement                    │")
+    print("=" * 60)
+
+def compare_results_v1(data, errors_raw, b, a0):
+    print("\n" + "=" * 70)
+    print("│              Error Comparison (Raw vs Degree-1 Fit)            │")
+    print("=" * 70)
+    print(f"│ {'Index':>8} │ {'V_Meas':>8} │ {'Raw_Err%':>10} │ {'V_Corr':>8} │ {'Corr_Err%':>10} │")
+    print("-" * 70)
+
+    sample_indices = [i for i in range(0, len(data), len(data)//8)]
+
+    for i in sample_indices:
+        idx, voltMeas = data[i]
+        if idx == 0:
+            continue
+        theory = idx * 0.000153
+        raw_err = (voltMeas - theory) / theory * 100
+        voltCorr = polynomial_compensate_v1(idx, b, a0)
+        corr_err = (voltCorr - theory) / theory * 100
+        print(f"│ {idx:>8} │ {voltMeas:>8.3f} │ {raw_err:>10.4f} │ {voltCorr:>8.3f} │ {corr_err:>10.4f} │")
+
+    print("=" * 70)
+
+def polynomial_compensate_v3(x, a3, a2, a1, a0):
+    return a3 * x * x * x + a2 * x * x + a1 * x + a0
+
+def polynomial_analysis_v3(data, a3, a2, a1, a0):
+    compensated = []
+    for idx, voltMeas in data:
+        voltCorr = polynomial_compensate_v3(idx, a3, a2, a1, a0)
+        compensated.append((idx, voltMeas, voltCorr))
+
+    errors = []
+    for idx, voltMeas, voltCorr in compensated:
+        if idx > 0:
+            theory = idx * 0.000153
+            error = (voltCorr - theory) / theory * 100
+            errors.append(error)
+
+    max_err = max(errors)
+    min_err = min(errors)
+    avg_err = sum(errors) / len(errors)
+
+    print("\n" + "=" * 60)
+    print("│     Polynomial Compensation (y=ax³+bx²+cx+d)                     │")
+    print("=" * 60)
+    print(f"│  Coefficients:                                        │")
+    print(f"│    a = {a3:>15.10e}                             │")
+    print(f"│    b = {a2:>15.10e}                             │")
+    print(f"│    c = {a1:>15.10e}                             │")
+    print(f"│    d = {a0:>15.10e}                             │")
+    print("=" * 60)
+    print(f"│  Max Error:  {max_err:>10.4f}%                            │")
+    print(f"│  Min Error:  {min_err:>10.4f}%                            │")
+    print(f"│  Avg Error:  {avg_err:>10.4f}%                            │")
+    print(f"│  Error Range:{max_err - min_err:.4f}%                          │")
+    print("=" * 60)
+
+    if max(abs(max_err), abs(min_err)) <= 0.01:
+        print("│  Result: ★★★★★ Excellent (Error < 0.01%)         │")
+    elif max(abs(max_err), abs(min_err)) <= 0.05:
+        print("│  Result: ★★★★ Great (Error < 0.05%)              │")
+    elif max(abs(max_err), abs(min_err)) <= 0.1:
+        print("│  Result: ★★★ Good (Error < 0.1%)                │")
+    elif max(abs(max_err), abs(min_err)) <= 0.5:
+        print("│  Result: ★★ Acceptable (Error < 0.5%)            │")
+    else:
+        print("│  Result: ✗ Needs Improvement                    │")
+    print("=" * 60)
+
+def compare_results_v3(data, errors_raw, a3, a2, a1, a0):
+    print("\n" + "=" * 70)
+    print("│              Error Comparison (Raw vs Degree-3 Fit)           │")
+    print("=" * 70)
+    print(f"│ {'Index':>8} │ {'V_Meas':>8} │ {'Raw_Err%':>10} │ {'V_Corr':>8} │ {'Corr_Err%':>10} │")
+    print("-" * 70)
+
+    sample_indices = [i for i in range(0, len(data), len(data)//8)]
+
+    for i in sample_indices:
+        idx, voltMeas = data[i]
+        if idx == 0:
+            continue
+        theory = idx * 0.000153
+        raw_err = (voltMeas - theory) / theory * 100
+        voltCorr = polynomial_compensate_v3(idx, a3, a2, a1, a0)
+        corr_err = (voltCorr - theory) / theory * 100
+        print(f"│ {idx:>8} │ {voltMeas:>8.3f} │ {raw_err:>10.4f} │ {voltCorr:>8.3f} │ {corr_err:>10.4f} │")
+
+    print("=" * 70)
+
 def compare_results_v(data, errors_raw, a2, a1, a0):
     print("\n" + "=" * 70)
     print("│              Error Comparison (Raw vs Compensation)              │")
@@ -335,7 +525,62 @@ def compare_results(data, errors_raw, a2, a1, a0):
 
     print("=" * 70)
 
+def generate_c_code(name, degree, coefficients, max_error):
+    if degree == 1:
+        b, a0 = coefficients
+        func_body = f"    return {b:.10e} * (float)x + {a0:.10e};"
+    elif degree == 2:
+        a2, a1, a0 = coefficients
+        func_body = f"    float xf = (float)x;\n    return {a2:.10e} * xf * xf + {a1:.10e} * xf + {a0:.10e};"
+    elif degree == 3:
+        a3, a2, a1, a0 = coefficients
+        func_body = f"    float xf = (float)x;\n    return {a3:.10e} * xf * xf * xf + {a2:.10e} * xf * xf + {a1:.10e} * xf + {a0:.10e};"
+
+    guard_name = name.upper().replace(" ", "_").replace("-", "_")
+
+    print(f"\n// =======================================================================")
+    print(f"// {name} Compensation Function (degree={degree}, Max Error: {max_error:.4f}%)")
+    print(f"// =======================================================================")
+    print(f"")
+    print(f"#ifndef {guard_name}_H")
+    print(f"#define {guard_name}_H")
+    print(f"")
+    print(f"#ifdef __cplusplus")
+    print(f"extern \"C\" {{")
+    print(f"#endif")
+    print(f"")
+    print(f"// Convert Index to Voltage")
+    print(f"// Input:  uint16_t index - Index value")
+    print(f"// Output: float - Voltage in Volts")
+    print(f"extern float {name.replace(' ', '_').replace('-', '_')}_compensate(uint16_t x);")
+    print(f"")
+    print(f"#ifdef __cplusplus")
+    print(f"}}")
+    print(f"#endif")
+    print(f"")
+    print(f"#endif // {guard_name}_H")
+    print(f"")
+    print(f"// =======================================================================")
+    print(f"// Implementation")
+    print(f"// =======================================================================")
+    print(f"")
+    print(f"#ifdef {guard_name}_IMPLEMENTATION")
+    print(f"")
+    print(f"float {name.replace(' ', '_').replace('-', '_')}_compensate(uint16_t x) {{")
+    print(f"{func_body}")
+    print(f"}}")
+    print(f"")
+    print(f"#endif // {guard_name}_IMPLEMENTATION")
+    print(f"")
+
 def main():
+    parser = argparse.ArgumentParser(description='DA Voltage Analysis Tool')
+    parser.add_argument('-d', '--degree', type=int, default=None, help='Polynomial degree (1, 2, or 3). Auto-select if not specified.')
+    parser.add_argument('--auto', action='store_true', help='Auto-select best polynomial degree using AIC/BIC')
+    parser.add_argument('--show-all', action='store_true', help='Show results for all polynomial degrees')
+    parser.add_argument('--output-c', action='store_true', help='Output C code for integration')
+    args = parser.parse_args()
+
     filepath = 'da.txt'
     data = load_da_data(filepath)
     if not data:
@@ -361,15 +606,107 @@ def main():
     print(f"│  Avg Error:  {err_stats['avg']:>10.4f}%                   │")
     print("=" * 50)
 
-    print("\n>>> Calculating Polynomial Fit...")
-
     x_data = [d[0] for d in data]
     y_data = [d[1] for d in data]
 
-    a2, a1, a0 = polynomial_fit(x_data, y_data, degree=2)
+    if args.show_all or args.auto:
+        print("\n" + "=" * 60)
+        print("│       Comparing Polynomial Degrees (1/2/3)                        │")
+        print("=" * 60)
+        print(f"│ {'Degree':^8} │ {'AIC':^14} │ {'BIC':^14} │ {'MaxErr%':^10} │")
+        print("-" * 60)
 
-    polynomial_analysis_v(data, a2, a1, a0)
-    compare_results_v(data, errors, a2, a1, a0)
+        results = []
+        for deg in [1, 2, 3]:
+            try:
+                aic, bic = calculate_aic_bic(x_data, y_data, deg)
+                if deg == 1:
+                    b, a0 = polynomial_fit(x_data, y_data, degree=1)
+                    y_pred = [b * x + a0 for x in x_data]
+                elif deg == 2:
+                    a2, a1, a0 = polynomial_fit(x_data, y_data, degree=2)
+                    y_pred = [a2 * x * x + a1 * x + a0 for x in x_data]
+                else:
+                    a3, a2, a1, a0 = polynomial_fit(x_data, y_data, degree=3)
+                    y_pred = [a3 * x * x * x + a2 * x * x + a1 * x + a0 for x in x_data]
+
+                curr_errors = []
+                for i, (idx, volt) in enumerate(data):
+                    if idx > 0:
+                        theory = idx * 0.000153
+                        err = abs((y_pred[i] - theory) / theory * 100)
+                        curr_errors.append(err)
+                max_err = max(curr_errors) if curr_errors else 0
+                results.append((deg, aic, bic, max_err))
+                print(f"│ {deg:^8} │ {aic:^14.4f} │ {bic:^14.4f} │ {max_err:^10.4f} │")
+            except Exception as e:
+                print(f"│ {deg:^8} │ Failed: {str(e)[:20]:^20} │")
+
+        print("=" * 60)
+
+        if args.auto:
+            best_aic = min(results, key=lambda x: x[1])
+            best_err = min(results, key=lambda x: x[3])
+            print(f"\n>>> AIC Best: degree={best_aic[0]} (AIC={best_aic[1]:.4f})")
+            print(f">>> Error Best: degree={best_err[0]} (MaxErr={best_err[3]:.4f}%)")
+
+            if best_aic[0] == best_err[0]:
+                auto_degree = best_aic[0]
+                print(f">>> Auto-selected: degree={auto_degree} (both AIC and error best)")
+            else:
+                auto_degree = best_err[0]
+                print(f">>> Auto-selected: degree={auto_degree} (lowest error wins)")
+
+            args.degree = auto_degree
+
+    if args.degree is None:
+        args.degree = 2
+
+    print(f"\n>>> Calculating Polynomial Fit (degree={args.degree})...")
+
+    max_err = 0
+    if args.degree == 1:
+        b, a0 = polynomial_fit(x_data, y_data, degree=1)
+        coefficients = (b, a0)
+        polynomial_analysis_v1(data, b, a0)
+        compare_results_v1(data, errors, b, a0)
+        curr_errors = []
+        for i, (idx, volt) in enumerate(data):
+            if idx > 0:
+                theory = idx * 0.000153
+                pred = b * idx + a0
+                err = abs((pred - theory) / theory * 100)
+                curr_errors.append(err)
+        max_err = max(curr_errors) if curr_errors else 0
+    elif args.degree == 2:
+        a2, a1, a0 = polynomial_fit(x_data, y_data, degree=2)
+        coefficients = (a2, a1, a0)
+        polynomial_analysis_v(data, a2, a1, a0)
+        compare_results_v(data, errors, a2, a1, a0)
+        curr_errors = []
+        for i, (idx, volt) in enumerate(data):
+            if idx > 0:
+                theory = idx * 0.000153
+                pred = a2 * idx * idx + a1 * idx + a0
+                err = abs((pred - theory) / theory * 100)
+                curr_errors.append(err)
+        max_err = max(curr_errors) if curr_errors else 0
+    elif args.degree == 3:
+        a3, a2, a1, a0 = polynomial_fit(x_data, y_data, degree=3)
+        coefficients = (a3, a2, a1, a0)
+        polynomial_analysis_v3(data, a3, a2, a1, a0)
+        compare_results_v3(data, errors, a3, a2, a1, a0)
+        curr_errors = []
+        for i, (idx, volt) in enumerate(data):
+            if idx > 0:
+                theory = idx * 0.000153
+                pred = a3 * idx * idx * idx + a2 * idx * idx + a1 * idx + a0
+                err = abs((pred - theory) / theory * 100)
+                curr_errors.append(err)
+        max_err = max(curr_errors) if curr_errors else 0
+
+    if args.output_c:
+        generate_c_code("DA", args.degree, coefficients, max_err)
 
 if __name__ == '__main__':
     main()

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import sys
+import argparse
+import math
 
 def load_ad_data(filepath):
     data = []
@@ -369,7 +371,98 @@ def compare_results(data, errors_raw, a, b, c):
 
     print("=" * 70)
 
+def calculate_aic_bic(x_data, y_data, degree):
+    n = len(x_data)
+    if degree == 1:
+        k = 2
+    elif degree == 2:
+        k = 3
+    elif degree == 3:
+        k = 4
+    else:
+        k = degree + 1
+
+    if degree == 1:
+        b, a0 = polynomial_fit(x_data, y_data, degree=1)
+        y_pred = [b * x + a0 for x in x_data]
+    elif degree == 2:
+        a2, a1, a0 = polynomial_fit(x_data, y_data, degree=2)
+        y_pred = [a2 * x * x + a1 * x + a0 for x in x_data]
+    elif degree == 3:
+        a3, a2, a1, a0 = polynomial_fit(x_data, y_data, degree=3)
+        y_pred = [a3 * x * x * x + a2 * x * x + a1 * x + a0 for x in x_data]
+    else:
+        return None, None
+
+    rss = sum((y_data[i] - y_pred[i]) ** 2 for i in range(n))
+    if rss <= 0:
+        rss = 1e-10
+
+    aic = n * math.log(rss / n) + 2 * k
+    bic = n * math.log(rss / n) + k * math.log(n)
+
+    return aic, bic
+
+def generate_c_code(name, degree, coefficients, max_error, description=""):
+    coef_len = len(coefficients)
+    if degree == 1:
+        b, a0 = coefficients
+        formula = f"b * x + a0"
+        func_body = f"    return {b:.10e} * (float)x + {a0:.10e};"
+    elif degree == 2:
+        a2, a1, a0 = coefficients
+        formula = f"a2 * x^2 + a1 * x + a0"
+        func_body = f"    float xf = (float)x;\n    return {a2:.10e} * xf * xf + {a1:.10e} * xf + {a0:.10e};"
+    elif degree == 3:
+        a3, a2, a1, a0 = coefficients
+        formula = f"a3 * x^3 + a2 * x^2 + a1 * x + a0"
+        func_body = f"    float xf = (float)x;\n    return {a3:.10e} * xf * xf * xf + {a2:.10e} * xf * xf + {a1:.10e} * xf + {a0:.10e};"
+
+    guard_name = name.upper().replace(" ", "_").replace("-", "_")
+
+    print(f"\n// =======================================================================")
+    print(f"// {name} Compensation Function (degree={degree}, Max Error: {max_error:.4f}%)")
+    print(f"// =======================================================================")
+    print(f"")
+    print(f"#ifndef {guard_name}_H")
+    print(f"#define {guard_name}_H")
+    print(f"")
+    print(f"#ifdef __cplusplus")
+    print(f"extern \"C\" {{")
+    print(f"#endif")
+    print(f"")
+    print(f"// Compensate ADC data to get actual DA value")
+    print(f"// Input:  uint16_t ad_value - Raw ADC value")
+    print(f"// Output: float - Compensated DA value")
+    print(f"extern float {name.replace(' ', '_').replace('-', '_')}_compensate(uint16_t x);")
+    print(f"")
+    print(f"#ifdef __cplusplus")
+    print(f"}}")
+    print(f"#endif")
+    print(f"")
+    print(f"#endif // {guard_name}_H")
+    print(f"")
+    print(f"// =======================================================================")
+    print(f"// Implementation")
+    print(f"// =======================================================================")
+    print(f"")
+    print(f"#ifdef {guard_name}_IMPLEMENTATION")
+    print(f"")
+    print(f"float {name.replace(' ', '_').replace('-', '_')}_compensate(uint16_t x) {{")
+    print(f"{func_body}")
+    print(f"}}")
+    print(f"")
+    print(f"#endif // {guard_name}_IMPLEMENTATION")
+    print(f"")
+
 def main():
+    parser = argparse.ArgumentParser(description='AD Analysis Tool')
+    parser.add_argument('-d', '--degree', type=int, default=None, help='Polynomial degree (1, 2, or 3). Auto-select if not specified.')
+    parser.add_argument('--auto', action='store_true', help='Auto-select best polynomial degree')
+    parser.add_argument('--show-all', action='store_true', help='Show results for all polynomial degrees')
+    parser.add_argument('--output-c', action='store_true', help='Output C code for integration')
+    args = parser.parse_args()
+
     filepath = 'ad.txt'
     data = load_ad_data(filepath)
     if not data:
@@ -391,8 +484,6 @@ def main():
     print(f"│  Avg Error:  {err_stats['avg']:>10.4f}%                   │")
     print("=" * 50)
 
-    print("\n>>> Filtering outliers and recalculating...")
-
     filtered_data = []
     err_threshold = 3.0
     for da, ad in data:
@@ -401,52 +492,90 @@ def main():
             if err < err_threshold:
                 filtered_data.append((da, ad))
 
-    print(f"Filtered {len(data) - len(filtered_data)} outliers, {len(filtered_data)} points for fit")
+    print(f"\nFiltered {len(data) - len(filtered_data)} outliers, {len(filtered_data)} points for fit")
 
     x_data = [d[1] for d in filtered_data]
     y_data = [d[0] for d in filtered_data]
 
-    x_all = [d[1] for d in data]
-    y_all = [d[0] for d in data]
+    if args.show_all or args.auto:
+        print("\n" + "=" * 60)
+        print("│       Comparing Polynomial Degrees (1/2/3)                        │")
+        print("=" * 60)
+        print(f"│ {'Degree':^8} │ {'AIC':^14} │ {'BIC':^14} │ {'MaxErr%':^10} │")
+        print("-" * 60)
 
-    print("\n" + "=" * 60)
-    print("│  Segmented Analysis (Different compensation for different ranges)        │")
-    print("=" * 60)
+        results = []
+        for deg in [1, 2, 3]:
+            try:
+                aic, bic = calculate_aic_bic(x_data, y_data, deg)
+                if deg == 1:
+                    b, a0 = polynomial_fit(x_data, y_data, degree=1)
+                    y_pred = [b * x + a0 for x in x_data]
+                elif deg == 2:
+                    a2, a1, a0 = polynomial_fit(x_data, y_data, degree=2)
+                    y_pred = [a2 * x * x + a1 * x + a0 for x in x_data]
+                else:
+                    a3, a2, a1, a0 = polynomial_fit(x_data, y_data, degree=3)
+                    y_pred = [a3 * x * x * x + a2 * x * x + a1 * x + a0 for x in x_data]
 
-    thresholds = [2000, 5000, 10000, 30000]
-    for thresh in thresholds:
-        low_data = [(d[0], d[1]) for d in filtered_data if d[0] <= thresh]
-        high_data = [(d[0], d[1]) for d in filtered_data if d[0] > thresh]
+                curr_errors = []
+                for i, (da, ad) in enumerate(filtered_data):
+                    if da > 0 and i < len(y_pred):
+                        err = abs((y_pred[i] - da) / da * 100)
+                        curr_errors.append(err)
+                max_err = max(curr_errors) if curr_errors else 0
+                results.append((deg, aic, bic, max_err))
+                print(f"│ {deg:^8} │ {aic:^14.4f} │ {bic:^14.4f} │ {max_err:^10.4f} │")
+            except Exception as e:
+                print(f"│ {deg:^8} │ Failed: {str(e)[:20]:^20} │")
 
-        if len(low_data) >= 3:
-            x_low = [d[1] for d in low_data]
-            y_low = [d[0] for d in low_data]
-            a2_l, a1_l, a0_l = polynomial_fit(x_low, y_low, degree=2)
+        print("=" * 60)
 
-            max_err = 0
-            for da, ad in data:
-                if da > 0:
-                    da_corr = polynomial_compensate(ad, a2_l, a1_l, a0_l)
-                    err = abs((da_corr - da) / da * 100)
-                    if err > max_err:
-                        max_err = err
+        if args.auto:
+            best_aic = min(results, key=lambda x: x[1])
+            best_err = min(results, key=lambda x: x[3])
+            print(f"\n>>> AIC Best: degree={best_aic[0]} (AIC={best_aic[1]:.4f})")
+            print(f">>> Error Best: degree={best_err[0]} (MaxErr={best_err[3]:.4f}%)")
 
-            print(f"│  Range 0-{thresh:5d}: a={a2_l:.2e}, b={a1_l:.4f}, c={a0_l:.2f} │")
-            print(f"│               MaxErr: {max_err:.4f}%                         │")
+            if best_aic[0] == best_err[0]:
+                auto_degree = best_aic[0]
+                print(f">>> Auto-selected: degree={auto_degree}")
+            else:
+                auto_degree = best_err[0]
+                print(f">>> Auto-selected: degree={auto_degree} (lowest error wins)")
 
-    print("=" * 60)
+            args.degree = auto_degree
 
-    print("\n>>> Recommended: Use lookup table for precision...")
-    print(">>> Generating LUT (Lookup Table) for 0-65535...")
+    if args.degree is None:
+        args.degree = 2
+
+    print(f"\n>>> Calculating Polynomial Fit (degree={args.degree})...")
 
     x_full = [d[1] for d in data]
     y_full = [d[0] for d in data]
-    a2_f, a1_f, a0_f = polynomial_fit(x_full, y_full, degree=2)
+
+    if args.degree == 1:
+        b, a0 = polynomial_fit(x_full, y_full, degree=1)
+        coefficients = (b, a0)
+        formula = "DA = b×AD + c"
+    elif args.degree == 2:
+        a2, a1, a0 = polynomial_fit(x_full, y_full, degree=2)
+        coefficients = (a2, a1, a0)
+        formula = "DA = a×AD² + b×AD + c"
+    elif args.degree == 3:
+        a3, a2, a1, a0 = polynomial_fit(x_full, y_full, degree=3)
+        coefficients = (a3, a2, a1, a0)
+        formula = "DA = a×AD³ + b×AD² + c×AD + d"
 
     lut_errors = []
     for da, ad in data:
         if da > 500:
-            da_corr = polynomial_compensate(ad, a2_f, a1_f, a0_f)
+            if args.degree == 1:
+                da_corr = b * ad + a0
+            elif args.degree == 2:
+                da_corr = a2 * ad * ad + a1 * ad + a0
+            else:
+                da_corr = a3 * ad * ad * ad + a2 * ad * ad + a1 * ad + a0
             err = (da_corr - da) / da * 100
             lut_errors.append((da, ad, da_corr, err))
 
@@ -454,12 +583,20 @@ def main():
     avg_err_lut = sum(e[3] for e in lut_errors) / len(lut_errors)
 
     print("\n" + "=" * 60)
-    print("│           Polynomial Fit Results Summary                        │")
+    print(f"│           Polynomial Fit ({formula})                   │")
     print("=" * 60)
-    print(f"│  Formula: DA_corr = a×AD² + b×AD + c                       │")
-    print(f"│    a = {a2_f:.10e}                             │")
-    print(f"│    b = {a1_f:.10f}                             │")
-    print(f"│    c = {a0_f:.10f}                             │")
+    if args.degree == 1:
+        print(f"│    b = {b:.10e}                             │")
+        print(f"│    c = {a0:.10e}                             │")
+    elif args.degree == 2:
+        print(f"│    a = {a2:.10e}                             │")
+        print(f"│    b = {a1:.10e}                             │")
+        print(f"│    c = {a0:.10e}                             │")
+    else:
+        print(f"│    a = {a3:.10e}                             │")
+        print(f"│    b = {a2:.10e}                             │")
+        print(f"│    c = {a1:.10e}                             │")
+        print(f"│    d = {a0:.10e}                             │")
     print("=" * 60)
     print(f"│  Max Error:  {max_err_lut:>10.4f}%                            │")
     print(f"│  Avg Error:  {avg_err_lut:>10.4f}%                            │")
@@ -480,6 +617,9 @@ def main():
     print("\n>>> Sample Compensated Values:")
     for da, ad, dac, err in lut_errors[::100]:
         print(f"  DA_Set={da:5d}: AD={ad:5d} -> DA_corr={dac:7.1f}, err={err:+.4f}%")
+
+    if args.output_c:
+        generate_c_code("AD", args.degree, coefficients, max_err_lut)
 
 if __name__ == '__main__':
     main()
