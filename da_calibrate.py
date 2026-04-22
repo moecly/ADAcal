@@ -525,16 +525,16 @@ def compare_results(data, errors_raw, a2, a1, a0):
 
     print("=" * 70)
 
-def generate_c_code(name, degree, coefficients, max_error, min_val=0.0, max_val=10.0):
+def generate_c_code(name, degree, coefficients, max_error, min_val=0, max_val=65535):
     if degree == 1:
         b, a0 = coefficients
-        func_body = f"    float result = {b:.10e} * (float)x + {a0:.10e};"
+        func_body = f"    if (x == 0) return 0.0f;\n    float result = {b:.10e} * (float)x + {a0:.10e};"
     elif degree == 2:
         a2, a1, a0 = coefficients
-        func_body = f"    float xf = (float)x;\n    float result = {a2:.10e} * xf * xf + {a1:.10e} * xf + {a0:.10e};"
+        func_body = f"    if (x == 0) return 0.0f;\n    float xf = (float)x;\n    float result = {a2:.10e} * xf * xf + {a1:.10e} * xf + {a0:.10e};"
     elif degree == 3:
         a3, a2, a1, a0 = coefficients
-        func_body = f"    float xf = (float)x;\n    float result = {a3:.10e} * xf * xf * xf + {a2:.10e} * xf * xf + {a1:.10e} * xf + {a0:.10e};"
+        func_body = f"    if (x == 0) return 0.0f;\n    float xf = (float)x;\n    float result = {a3:.10e} * xf * xf * xf + {a2:.10e} * xf * xf + {a1:.10e} * xf + {a0:.10e};"
 
     saturation = f"    if (result > {max_val:.1f}f) result = {max_val:.1f}f;\n    if (result < {min_val:.1f}f) result = {min_val:.1f}f;\n    return result;"
 
@@ -542,7 +542,8 @@ def generate_c_code(name, degree, coefficients, max_error, min_val=0.0, max_val=
 
     print(f"\n// =======================================================================")
     print(f"// {name} Compensation Function (degree={degree}, Max Error: {max_error:.4f}%)")
-    print(f"// Saturation: [{min_val}, {max_val}]")
+    print(f"// Input:  DA theoretical value (0-65535)")
+    print(f"// Output: Compensated DA value (float)")
     print(f"// =======================================================================")
     print(f"")
     print(f"#ifndef {guard_name}_H")
@@ -552,9 +553,9 @@ def generate_c_code(name, degree, coefficients, max_error, min_val=0.0, max_val=
     print(f"extern \"C\" {{")
     print(f"#endif")
     print(f"")
-    print(f"// Convert Index to Voltage")
-    print(f"// Input:  uint16_t index - Index value")
-    print(f"// Output: float - Voltage in Volts (clamped to [{min_val}, {max_val}])")
+    print(f"// Compensate DA theoretical value to actual output")
+    print(f"// Input:  uint16_t da_theoretical - Theoretical DA value")
+    print(f"// Output: float - Compensated DA value")
     print(f"extern float {name.replace(' ', '_').replace('-', '_')}_compensate(uint16_t x);")
     print(f"")
     print(f"#ifdef __cplusplus")
